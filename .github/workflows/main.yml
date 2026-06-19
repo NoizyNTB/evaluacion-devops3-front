@@ -1,0 +1,94 @@
+name: Build, Push and Deploy Frontend to EKS
+
+on:
+  push:
+    branches: [ "deploy" ]
+  workflow_dispatch: {}
+
+env:
+  REGISTRY_URL: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+jobs:
+  build-and-push:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.image_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Definir tag de imagen
+        id: set-tag
+        run: |
+          TAG="${{ github.sha }}"
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Build, tag, and push image
+        env:
+          ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.set-tag.outputs.image_tag }}
+        run: |
+          docker build -t ${{ env.REGISTRY_URL }}/$ECR_REPOSITORY:$IMAGE_TAG -t ${{ env.REGISTRY_URL }}/$ECR_REPOSITORY:latest .
+          docker push ${{ env.REGISTRY_URL }}/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push ${{ env.REGISTRY_URL }}/$ECR_REPOSITORY:latest
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPOSITORY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.29.0
+
+      - name: Configurar kubeconfig para EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+          kubectl config current-context
+
+      - name: Aplicar manifiestos de este servicio
+        run: |
+          kubectl apply -f k8s/ -n ${{ secrets.EKS_NAMESPACE }}
+
+      - name: Actualizar imagen del Deployment
+        run: |
+          kubectl set image deployment/${{ secrets.K8S_DEPLOYMENT_NAME }} \
+            ${{ secrets.K8S_CONTAINER_NAME }}=${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+            -n ${{ secrets.EKS_NAMESPACE }}
+          kubectl rollout status deployment/${{ secrets.K8S_DEPLOYMENT_NAME }} -n ${{ secrets.EKS_NAMESPACE }}
+
+      - name: Ver pods y servicios
+        run: |
+          kubectl get pods -n ${{ secrets.EKS_NAMESPACE }}
+          kubectl get svc -n ${{ secrets.EKS_NAMESPACE }}

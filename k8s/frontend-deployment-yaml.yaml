@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend                # ← debe coincidir con K8S_DEPLOYMENT_NAME
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend-app     # ← debe coincidir con K8S_CONTAINER_NAME
+          image: nginx:alpine    # placeholder, el workflow lo reemplaza
+          ports:
+            - containerPort: 80
